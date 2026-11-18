@@ -23,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SCAN_EVERY: Duration = Duration::from_secs(60);
 const WINDOW: &str = "carousel";
@@ -53,14 +54,24 @@ fn now_ms() -> i64 {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct View {
+    /// Waiting for you, newest first.
     cards: Vec<Card>,
+    /// Earlier cards (opened / done), newest first, without the ones waiting again.
+    history: Vec<Card>,
     auto_hide_sec: u64,
 }
 
 #[tauri::command]
 fn get_cards(shared: tauri::State<'_, Shared>) -> View {
     let g = shared.inner.lock().unwrap();
-    View { cards: g.cards.clone(), auto_hide_sec: g.state.settings.auto_hide_sec }
+    let history = g
+        .state
+        .history
+        .iter()
+        .filter(|h| !g.cards.iter().any(|c| c.id == h.id))
+        .cloned()
+        .collect();
+    View { cards: g.cards.clone(), history, auto_hide_sec: g.state.settings.auto_hide_sec }
 }
 
 #[tauri::command]
@@ -92,7 +103,7 @@ fn hide_window(app: AppHandle) {
 fn find_card(app: &AppHandle, id: &str) -> Option<Card> {
     let shared = app.state::<Shared>();
     let g = shared.inner.lock().unwrap();
-    g.cards.iter().find(|c| c.id == id).cloned()
+    g.cards.iter().chain(&g.state.history).find(|c| c.id == id).cloned()
 }
 
 /// Change the saved state for one card, drop it from the list, refresh UI.
@@ -137,6 +148,7 @@ fn tick(app: &AppHandle) {
     let (count, popup) = {
         let mut g = shared.inner.lock().unwrap();
         g.state.prune(&all, now);
+        g.state.backfill_history(&all);
         let visible: Vec<Card> = all.into_iter().filter(|c| g.state.is_visible(c, now)).collect();
         let has_new = visible.iter().any(|c| !g.known.contains(&c.id));
         let every = Duration::from_secs(g.state.settings.remind_every_min * 60);
@@ -160,7 +172,7 @@ fn refresh_ui(app: &AppHandle, count: usize) {
     if let Some(tray) = app.tray_by_id(TRAY) {
         let label = if count > 0 { count.to_string() } else { String::new() };
         let _ = tray.set_title(Some(label)); // number next to the icon (macOS menu bar)
-        let _ = tray.set_tooltip(Some(format!("Claude Carousel — ждут ответа: {count}")));
+        let _ = tray.set_tooltip(Some(format!("Claude Carousel — waiting: {count}")));
     }
     let _ = app.emit("cards-changed", ());
 }
@@ -180,17 +192,34 @@ fn show_window(app: &AppHandle) {
     let _ = app.emit("shown", ());
 }
 
+/// Hotkey: hide if open, otherwise show and take keyboard focus (so ← → Enter Esc work).
+fn toggle_window(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(WINDOW) else { return };
+    if w.is_visible().unwrap_or(false) {
+        let _ = w.hide();
+    } else {
+        show_window(app);
+        let _ = w.set_focus();
+    }
+}
+
+fn register_hotkey(app: &tauri::App, hotkey: &str) {
+    if let Err(e) = app.global_shortcut().register(hotkey) {
+        eprintln!("Claude Carousel: could not register hotkey {hotkey:?}: {e}");
+    }
+}
+
 // ---------- app setup ----------
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?,
-            &MenuItem::with_id(app, "rescan", "Проверить сейчас", true, None::<&str>)?,
-            &MenuItem::with_id(app, "all_done", "Отметить все как просмотренные", true, None::<&str>)?,
+            &MenuItem::with_id(app, "show", "Show", true, None::<&str>)?,
+            &MenuItem::with_id(app, "rescan", "Check now", true, None::<&str>)?,
+            &MenuItem::with_id(app, "all_done", "Mark all as done", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
         ],
     )?;
     TrayIconBuilder::with_id(TRAY)
@@ -224,6 +253,15 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        toggle_window(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             // Menu-bar-only app: no Dock icon.
             #[cfg(target_os = "macos")]
@@ -231,8 +269,10 @@ fn main() {
 
             let state_file = app.path().app_data_dir()?.join("state.json");
             let paths = Paths::detect().expect("home folder not found");
+            let state = State::load(&state_file);
+            register_hotkey(app, &state.settings.hotkey);
             app.manage(Shared {
-                inner: Mutex::new(Inner { state: State::load(&state_file), ..Default::default() }),
+                inner: Mutex::new(Inner { state, ..Default::default() }),
                 paths,
                 state_file,
             });

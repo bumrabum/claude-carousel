@@ -8,7 +8,7 @@
 //! For Cowork and CLI there is no "last opened" time, so a session counts as
 //! waiting when the last message in its transcript is a finished Claude reply.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -25,7 +25,7 @@ const TAIL_BYTES: u64 = 512 * 1024;
 const SUMMARY_CHARS: usize = 220;
 const TITLE_CHARS: usize = 70;
 
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Code,
@@ -34,7 +34,7 @@ pub enum Source {
 }
 
 /// One "come back here" card.
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Card {
     /// Unique across sources: "<source>:<session id>".

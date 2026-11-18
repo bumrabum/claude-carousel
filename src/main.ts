@@ -1,4 +1,6 @@
-// The carousel window: shows one card at a time, flip with arrows / wheel / swipe.
+// The carousel window: shows one slide at a time, flip with arrows / wheel / swipe.
+// Slides: cards waiting for you, then "All caught up" (only when nothing waits),
+// then earlier cards you already opened or marked done.
 // Data and actions come from the Rust side (src-tauri/src/main.rs).
 
 import { invoke } from "@tauri-apps/api/core";
@@ -19,10 +21,15 @@ interface Card {
 
 interface View {
   cards: Card[];
+  history: Card[];
   autoHideSec: number;
 }
 
+type Slide = { kind: "waiting"; card: Card } | { kind: "earlier"; card: Card } | { kind: "empty" };
+
 const SOURCE_LABEL: Record<Source, string> = { code: "Code", cowork: "Cowork", cli: "CLI" };
+/** With nothing waiting the window goes away sooner. */
+const EMPTY_HIDE_SEC = 6;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
@@ -35,7 +42,8 @@ const el = {
   body: $("body"),
 };
 
-let cards: Card[] = [];
+let slides: Slide[] = [];
+let waitingCount = 0;
 let index = 0;
 let autoHideSec = 15;
 let hideTimer: number | undefined;
@@ -44,29 +52,52 @@ let hovered = false;
 // ---------- data ----------
 
 async function refresh() {
-  const currentId = cards[index]?.id;
+  const currentKey = slideKey(slides[index]);
   const view = await invoke<View>("get_cards");
-  cards = view.cards;
   autoHideSec = view.autoHideSec;
-  // Stay on the same card if it is still there.
-  const kept = cards.findIndex((c) => c.id === currentId);
-  index = kept >= 0 ? kept : Math.min(index, Math.max(cards.length - 1, 0));
+  waitingCount = view.cards.length;
+  slides = [
+    ...view.cards.map((card): Slide => ({ kind: "waiting", card })),
+    ...(view.cards.length === 0 ? [{ kind: "empty" } as Slide] : []),
+    ...view.history.map((card): Slide => ({ kind: "earlier", card })),
+  ];
+  // Stay on the same slide if it is still there.
+  const kept = slides.findIndex((s) => slideKey(s) === currentKey);
+  index = kept >= 0 ? kept : Math.min(index, slides.length - 1);
   render();
-  if (cards.length === 0) hide();
+}
+
+function slideKey(s: Slide | undefined): string {
+  if (!s) return "";
+  return s.kind === "empty" ? "empty" : `${s.kind}:${s.card.id}`;
 }
 
 // ---------- drawing ----------
 
 function render(direction = 0) {
-  const card = cards[index];
-  if (!card) return;
-  el.card.dataset.source = card.source;
-  el.source.textContent = SOURCE_LABEL[card.source];
-  el.where.textContent = [card.project, timeAgo(card.activityAt)].filter(Boolean).join(" · ");
-  el.counter.textContent = `${index + 1} / ${cards.length}`;
-  el.title.textContent = card.title;
-  el.summary.textContent = card.summary || "Claude ждёт вашего ответа.";
-  el.card.title = card.cwd;
+  const slide = slides[index];
+  if (!slide) return;
+  el.card.classList.toggle("empty", slide.kind === "empty");
+  el.card.classList.toggle("earlier", slide.kind === "earlier");
+  el.card.classList.toggle("single", slides.length < 2);
+  el.counter.textContent = slides.length > 1 ? `${index + 1} / ${slides.length}` : "";
+
+  if (slide.kind === "empty") {
+    el.card.dataset.source = "none";
+    el.where.textContent = slides.length > 1 ? "← → earlier cards" : "";
+    el.title.textContent = "All caught up";
+    el.summary.textContent = "No sessions are waiting for your reply.";
+    el.card.title = "";
+  } else {
+    const card = slide.card;
+    el.card.dataset.source = card.source;
+    el.source.textContent = slide.kind === "earlier" ? "Earlier" : SOURCE_LABEL[card.source];
+    el.where.textContent = [card.project, timeAgo(card.activityAt)].filter(Boolean).join(" · ");
+    el.title.textContent = card.title;
+    el.summary.textContent = card.summary || "Claude is waiting for your reply.";
+    el.card.title = card.cwd;
+  }
+
   if (direction !== 0) {
     el.body.classList.remove("slide-left", "slide-right");
     void el.body.offsetWidth; // restart the animation
@@ -76,25 +107,28 @@ function render(direction = 0) {
 
 function timeAgo(ms: number): string {
   const min = Math.max(1, Math.round((Date.now() - ms) / 60_000));
-  if (min < 60) return `${min} мин назад`;
+  if (min < 60) return `${min} min ago`;
   const h = Math.round(min / 60);
-  if (h < 48) return `${h} ч назад`;
-  return `${Math.round(h / 24)} дн назад`;
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} d ago`;
 }
 
 function move(step: number) {
-  if (cards.length < 2) return;
-  index = (index + step + cards.length) % cards.length;
+  if (slides.length < 2) return;
+  index = (index + step + slides.length) % slides.length;
   render(step);
+  startHideTimer(); // flipping counts as "still looking"
 }
 
 // ---------- actions ----------
 
 async function act(command: "open_card" | "mark_done" | "snooze") {
-  const card = cards[index];
-  if (!card) return;
-  await invoke(command, { id: card.id });
+  const slide = slides[index];
+  if (!slide || slide.kind === "empty") return;
+  if (slide.kind === "earlier" && command !== "open_card") return;
+  await invoke(command, { id: slide.card.id });
   await refresh();
+  startHideTimer();
 }
 
 function hide() {
@@ -105,7 +139,8 @@ function hide() {
 /** Hide by itself unless the mouse is over the card. */
 function startHideTimer() {
   clearTimeout(hideTimer);
-  if (!hovered) hideTimer = window.setTimeout(hide, autoHideSec * 1000);
+  const seconds = waitingCount === 0 ? EMPTY_HIDE_SEC : autoHideSec;
+  if (!hovered) hideTimer = window.setTimeout(hide, seconds * 1000);
 }
 
 // ---------- wiring ----------
@@ -126,7 +161,7 @@ el.card.addEventListener("mouseleave", () => {
   startHideTimer();
 });
 
-// Wheel / trackpad swipe flips cards; a short cooldown keeps one swipe = one card.
+// Wheel / trackpad swipe flips slides; a short cooldown keeps one swipe = one slide.
 let wheelLock = 0;
 el.card.addEventListener(
   "wheel",

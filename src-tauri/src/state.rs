@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// How many earlier cards to keep for browsing.
+const HISTORY_MAX: usize = 20;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -15,11 +18,18 @@ pub struct Settings {
     pub auto_hide_sec: u64,
     /// "Later" hides a card for this many minutes.
     pub snooze_min: i64,
+    /// Global shortcut that shows / hides the carousel. "CommandOrControl" is Cmd on Mac, Ctrl on Windows.
+    pub hotkey: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { remind_every_min: 20, auto_hide_sec: 15, snooze_min: 60 }
+        Self {
+            remind_every_min: 20,
+            auto_hide_sec: 15,
+            snooze_min: 60,
+            hotkey: "CommandOrControl+Shift+C".into(),
+        }
     }
 }
 
@@ -32,6 +42,8 @@ pub struct State {
     pub done: HashMap<String, i64>,
     /// Card id -> hidden until this time (unix ms).
     pub snoozed: HashMap<String, i64>,
+    /// Cards you opened or marked done, newest first, to flip back through.
+    pub history: Vec<Card>,
 }
 
 impl State {
@@ -60,10 +72,23 @@ impl State {
     pub fn mark_done(&mut self, card: &Card) {
         self.done.insert(card.id.clone(), card.activity_at);
         self.snoozed.remove(&card.id);
+        self.history.retain(|c| c.id != card.id);
+        self.history.insert(0, card.clone());
+        self.history.truncate(HISTORY_MAX);
     }
 
     pub fn snooze(&mut self, card: &Card, now: i64) {
         self.snoozed.insert(card.id.clone(), now + self.settings.snooze_min * 60_000);
+    }
+
+    /// Add sessions marked done before history existed (or done on another run) to the history.
+    pub fn backfill_history(&mut self, all_cards: &[Card]) {
+        for card in all_cards {
+            let done = self.done.get(&card.id).is_some_and(|&at| at >= card.activity_at);
+            if done && self.history.len() < HISTORY_MAX && !self.history.iter().any(|h| h.id == card.id) {
+                self.history.push(card.clone());
+            }
+        }
     }
 
     /// Forget sessions that are gone and snoozes that ran out, so the file stays small.

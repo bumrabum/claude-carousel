@@ -56,6 +56,18 @@ body {
 .card[data-source="code"] { --accent: var(--code); }
 .card[data-source="cowork"] { --accent: var(--cowork); }
 .card[data-source="cli"] { --accent: var(--cli); }
+.card[data-source="none"] { --accent: var(--cli); }
+
+/* Nothing waiting: just the message, arrows to earlier cards and the close button. */
+.card.empty .badge,
+.card.empty .actions,
+.card.single #prev,
+.card.single #next { display: none; }
+
+/* Earlier cards: greyed out, only "Open". */
+.card.earlier { --accent: var(--muted); }
+.card.earlier #later,
+.card.earlier #done { display: none; }
 
 .meta {
   display: flex;
