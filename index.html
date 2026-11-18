@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Carousel</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <main id="card" class="card" aria-live="polite">
+      <header class="meta">
+        <span id="source" class="badge"></span>
+        <span id="where" class="where"></span>
+        <span class="spacer"></span>
+        <button id="prev" class="icon" title="Назад (←)" aria-label="Назад">‹</button>
+        <span id="counter" class="counter"></span>
+        <button id="next" class="icon" title="Дальше (→)" aria-label="Дальше">›</button>
+        <button id="close" class="icon" title="Скрыть (Esc)" aria-label="Скрыть">×</button>
+      </header>
+      <div id="body" class="body">
+        <h1 id="title" class="title"></h1>
+        <p id="summary" class="summary"></p>
+      </div>
+      <footer class="actions">
+        <button id="open" class="primary">Открыть</button>
+        <button id="later">Позже</button>
+        <button id="done">Готово</button>
+      </footer>
+    </main>
+  </body>
+</html>
