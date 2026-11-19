@@ -23,7 +23,7 @@ still flip to the earlier cards.
 
 ## Controls
 
-- The open carousel flips to the next card every 4 seconds and hides after one round.
+- The open carousel flips to the next card every 10 seconds and hides after one round (at most 2 minutes).
   Hovering the mouse pauses it; flipping by hand stops auto-flip.
 - Arrows ‹ ›, mouse wheel / trackpad swipe, ← → keys; Enter opens, Esc hides.
 - **Cmd+Shift+C** (Ctrl+Shift+C on Windows) or a click on the tray icon shows / hides it.
@@ -79,7 +79,7 @@ The app's data folder: `~/Library/Application Support/dev.local.claude-carousel/
   "summaries": true,
   "summaryModel": "haiku",
   "claudePath": "",
-  "autoFlipSec": 4
+  "autoFlipSec": 10
 }
 ```
 

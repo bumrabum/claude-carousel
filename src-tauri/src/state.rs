@@ -43,7 +43,7 @@ impl Default for Settings {
             summaries: true,
             summary_model: "haiku".into(),
             claude_path: String::new(),
-            auto_flip_sec: 4,
+            auto_flip_sec: 10,
         }
     }
 }

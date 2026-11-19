@@ -39,7 +39,7 @@ const SOURCE_LABEL: Record<Source, string> = { code: "Code", cowork: "Cowork", c
 /** With no cards the window goes away sooner. */
 const EMPTY_HIDE_SEC = 6;
 /** Auto-flipping stops and the window hides after one round, but never later than this. */
-const MAX_ROUND_SEC = 60;
+const MAX_ROUND_SEC = 120;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
