@@ -63,6 +63,8 @@ struct CardView {
     #[serde(flatten)]
     card: Card,
     next_step: Option<NextStep>,
+    /// The next step was made before the latest activity in the session.
+    outdated: bool,
     /// A (newer) next-step line is being made right now or soon.
     summarizing: bool,
 }
@@ -84,8 +86,8 @@ struct View {
 fn get_cards(shared: tauri::State<'_, Shared>) -> View {
     let g = shared.inner.lock().unwrap();
     let view = |card: &Card| {
-        let (next_step, summarizing) = shared.summarizer.get(card);
-        CardView { card: card.clone(), next_step, summarizing }
+        let (next_step, outdated, summarizing) = shared.summarizer.get(card);
+        CardView { card: card.clone(), next_step, outdated, summarizing }
     };
     let history = g
         .state
@@ -107,7 +109,7 @@ fn get_cards(shared: tauri::State<'_, Shared>) -> View {
 fn open_card(app: AppHandle, id: String) -> Result<(), String> {
     let card = find_card(&app, &id).ok_or("card not found")?;
     actions::open(&card)?;
-    update_card(&app, &id, |state, card| state.mark_done(card));
+    update_card(&app, &id, |state, card| state.opened(card, now_ms()));
     hide_window(app);
     Ok(())
 }
@@ -117,18 +119,10 @@ fn snooze(app: AppHandle, id: String) {
     update_card(&app, &id, |state, card| state.snooze(card, now_ms()));
 }
 
-/// Hide a session for good (works for recent and earlier cards).
+/// "Don't remind": hide the card until something new happens in the session.
 #[tauri::command]
-fn ignore(app: AppHandle, id: String) {
-    let shared = app.state::<Shared>();
-    let count = {
-        let mut g = shared.inner.lock().unwrap();
-        g.state.ignore(&id);
-        g.state.save(&shared.state_file);
-        g.cards.retain(|c| c.id != id);
-        waiting_count(&g.cards)
-    };
-    refresh_ui(&app, count);
+fn mark_done(app: AppHandle, id: String) {
+    update_card(&app, &id, |state, card| state.mark_done(card));
 }
 
 /// Try making next steps again after a failure (e.g. after signing in to `claude`).
@@ -371,7 +365,7 @@ fn main() {
             get_cards,
             open_card,
             snooze,
-            ignore,
+            mark_done,
             hide_window,
             retry_summaries
         ])

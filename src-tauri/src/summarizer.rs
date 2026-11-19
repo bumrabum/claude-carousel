@@ -98,12 +98,13 @@ impl Summarizer {
         }
     }
 
-    /// The summary for a card (possibly made for an older state of the session) and
-    /// whether a newer one is being made.
-    pub fn get(&self, card: &Card) -> (Option<NextStep>, bool) {
+    /// The summary for a card, whether it was made for an older state of the session,
+    /// and whether a newer one is being made.
+    pub fn get(&self, card: &Card) -> (Option<NextStep>, bool, bool) {
         let g = self.inner.lock().unwrap();
-        let step = g.cache.get(&card.id).map(|e| e.step.clone());
-        (step, g.queued.contains(&card.id))
+        let entry = g.cache.get(&card.id);
+        let outdated = entry.is_some_and(|e| e.activity_at < card.activity_at);
+        (entry.map(|e| e.step.clone()), outdated, g.queued.contains(&card.id))
     }
 
     /// Queue sessions that have no up-to-date summary. Cards come in display order,
@@ -384,7 +385,7 @@ mod tests {
         let settings = CallSettings { model: "haiku".into(), claude_path: String::new() };
         while s.work_one(&settings, now) {}
         for c in &cards {
-            let (step, _) = s.get(c);
+            let (step, _, _) = s.get(c);
             println!("{} | waiting={}\n    {:?}", c.title, c.waiting, step);
         }
     }

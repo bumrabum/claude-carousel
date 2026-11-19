@@ -1,4 +1,4 @@
-//! What the user decided about cards ("done", "later", "ignore") plus settings.
+//! What the user decided about cards ("done", "later") plus settings.
 //! Saved as `state.json` in the app's data folder; safe to edit by hand.
 
 use crate::scanner::Card;
@@ -16,7 +16,7 @@ pub struct Settings {
     pub remind_every_min: u64,
     /// Hide the carousel after N seconds without the mouse over it.
     pub auto_hide_sec: u64,
-    /// "Later" hides a card for this many minutes.
+    /// "Open" and "Later" hide a card for this many minutes.
     pub snooze_min: i64,
     /// Global shortcut that shows / hides the carousel. "CommandOrControl" is Cmd on Mac, Ctrl on Windows.
     pub hotkey: String,
@@ -52,15 +52,13 @@ impl Default for Settings {
 #[serde(rename_all = "camelCase", default)]
 pub struct State {
     pub settings: Settings,
-    /// Card id -> Claude's activity time when you opened the card (or used "Mark all as done").
-    /// The card comes back only if Claude does something after that.
+    /// Card id -> Claude's activity time when you pressed "Don't remind".
+    /// The card comes back only if something happens in the session after that.
     pub done: HashMap<String, i64>,
-    /// Card id -> hidden until this time (unix ms).
+    /// Card id -> hidden until this time (unix ms), after "Open" or "Later".
     pub snoozed: HashMap<String, i64>,
-    /// Cards you opened or marked done, newest first, to flip back through.
+    /// Cards you opened or hid with "Don't remind", newest first, to flip back through.
     pub history: Vec<Card>,
-    /// Card ids you never want to see again, whatever happens in the session.
-    pub ignored: HashSet<String>,
 }
 
 impl State {
@@ -81,32 +79,34 @@ impl State {
     }
 
     pub fn is_visible(&self, card: &Card, now: i64) -> bool {
-        if self.ignored.contains(&card.id) {
-            return false;
-        }
         let done = self.done.get(&card.id).is_some_and(|&at| at >= card.activity_at);
         let snoozed = self.snoozed.get(&card.id).is_some_and(|&until| until > now);
         !done && !snoozed
     }
 
+    /// "Don't remind": hidden until something new happens in the session.
     pub fn mark_done(&mut self, card: &Card) {
         self.done.insert(card.id.clone(), card.activity_at);
         self.snoozed.remove(&card.id);
+        self.remember(card);
+    }
+
+    /// "Open": hidden for a while like "Later", so a session you only looked at comes back.
+    pub fn opened(&mut self, card: &Card, now: i64) {
+        self.snooze(card, now);
+        self.remember(card);
+    }
+
+    /// "Later": hidden for `snooze_min` minutes.
+    pub fn snooze(&mut self, card: &Card, now: i64) {
+        self.snoozed.insert(card.id.clone(), now + self.settings.snooze_min * 60_000);
+    }
+
+    /// Put the card first among the earlier cards.
+    fn remember(&mut self, card: &Card) {
         self.history.retain(|c| c.id != card.id);
         self.history.insert(0, card.clone());
         self.history.truncate(HISTORY_MAX);
-    }
-
-    /// Hide the session for good: not even new activity brings it back, and it leaves the earlier cards.
-    pub fn ignore(&mut self, id: &str) {
-        self.ignored.insert(id.to_string());
-        self.done.remove(id);
-        self.snoozed.remove(id);
-        self.history.retain(|c| c.id != id);
-    }
-
-    pub fn snooze(&mut self, card: &Card, now: i64) {
-        self.snoozed.insert(card.id.clone(), now + self.settings.snooze_min * 60_000);
     }
 
     /// Add sessions marked done before history existed (or done on another run) to the history.
@@ -120,8 +120,7 @@ impl State {
     }
 
     /// Forget sessions that are gone and snoozes that ran out, so the file stays small.
-    /// Ignored ids are kept: an old session can come back to life.
-    pub fn prune(&mut self, all_cards: &[Card], now: i64) {
+        pub fn prune(&mut self, all_cards: &[Card], now: i64) {
         let alive: HashSet<&str> = all_cards.iter().map(|c| c.id.as_str()).collect();
         self.done.retain(|id, _| alive.contains(id.as_str()));
         self.snoozed.retain(|id, &mut until| until > now && alive.contains(id.as_str()));
@@ -141,16 +140,20 @@ mod tests {
     }
 
     #[test]
-    fn ignored_sessions_stay_hidden_after_new_activity() {
+    fn done_cards_come_back_after_new_activity() {
         let mut state = State::default();
         state.mark_done(&card("code:a", 100));
-        state.ignore("code:a");
-        assert!(state.history.is_empty());
-        assert!(!state.is_visible(&card("code:a", 200), 0));
-        state.prune(&[], 0);
-        state.backfill_history(&[card("code:a", 200)]);
-        assert!(state.history.is_empty());
-        assert!(!state.is_visible(&card("code:a", 300), 0));
-        assert!(state.is_visible(&card("code:b", 300), 0));
+        assert!(!state.is_visible(&card("code:a", 100), 0));
+        assert!(state.is_visible(&card("code:a", 200), 0));
+        assert_eq!(state.history.len(), 1);
+    }
+
+    #[test]
+    fn opened_cards_come_back_after_an_hour() {
+        let mut state = State::default();
+        state.opened(&card("code:a", 100), 1_000);
+        assert!(!state.is_visible(&card("code:a", 100), 1_000 + 59 * 60_000));
+        assert!(state.is_visible(&card("code:a", 100), 1_000 + 61 * 60_000));
+        assert_eq!(state.history.len(), 1);
     }
 }

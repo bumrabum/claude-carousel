@@ -22,6 +22,8 @@ interface Card {
   waiting: boolean;
   working: boolean;
   nextStep: { stopped: string; next: string } | null;
+  /** nextStep was made before the latest activity in the session. */
+  outdated: boolean;
   summarizing: boolean;
 }
 
@@ -130,7 +132,11 @@ function drawCard(card: Card, earlier: boolean) {
   const step = card.nextStep;
   el.card.classList.toggle("raw", !step);
   el.card.classList.toggle("has-error", !step && !card.summarizing && !!summaryError);
-  if (step) {
+  if (step && card.outdated && !earlier) {
+    // Show the old step, but say a new one is on its way.
+    el.step.textContent = `→ ${step.next}`;
+    el.stopped.textContent = card.working ? "Claude is working… the next step will update" : "Updating the next step…";
+  } else if (step) {
     el.step.textContent = `→ ${step.next}`;
     el.stopped.textContent = `Stopped: ${step.stopped}`;
   } else if (card.working) {
@@ -207,10 +213,10 @@ function hide() {
 
 // ---------- actions ----------
 
-async function act(command: "open_card" | "snooze" | "ignore") {
+async function act(command: "open_card" | "snooze" | "mark_done") {
   const slide = slides[index];
   if (!slide || slide.kind === "empty") return;
-  if (slide.kind === "earlier" && command === "snooze") return;
+  if (slide.kind === "earlier" && command !== "open_card") return;
   manual = true;
   stopAutoFlip();
   await invoke(command, { id: slide.card.id });
@@ -225,7 +231,7 @@ $("next").onclick = () => move(1);
 $("close").onclick = hide;
 $("open").onclick = () => act("open_card");
 $("later").onclick = () => act("snooze");
-$("ignore").onclick = () => act("ignore");
+$("dont-remind").onclick = () => act("mark_done");
 $("retry").onclick = async () => {
   await invoke("retry_summaries");
   await refresh();

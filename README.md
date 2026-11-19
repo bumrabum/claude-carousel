@@ -12,14 +12,14 @@ small carousel of cards in the top-right corner that flips by itself, so you can
 - On top: where it's from (**Code** = Code tab in the Claude app, **Cowork**, **CLI** = `claude` in a terminal or an IDE),
   **● Waiting** if Claude answered and you haven't come back, the project folder and how long ago.
 - Buttons:
-  - **Open** jumps into the session. Code goes to the session in the Claude app; CLI opens a new terminal with `claude --resume <id>`.
-    The card then hides until something new happens in that session.
+  - **Open** jumps into the session and hides the card for 1 hour, like Later. Code goes to the session in the Claude app;
+    CLI opens a new terminal with `claude --resume <id>`.
   - **Later** hides the card for 1 hour.
-  - **Don't remind** hides the session for good, even if something new happens in it. Use it for junk or finished sessions.
+  - **Don't remind** hides the card until something new happens in the session (you or Claude write there).
   - **Retry** appears only when next steps could not be made (see below).
 
-Sessions waiting for you come first. After the recent sessions come **earlier** cards: the last 20 you opened
-(grey, no **Later**). With no recent sessions the carousel shows "All caught up", and the arrows
+Sessions waiting for you come first. After the recent sessions come **earlier** cards: the last 20 you opened or
+hid with Don't remind (grey, only **Open**). With no recent sessions the carousel shows "All caught up", and the arrows
 still flip to the earlier cards.
 
 ## Controls
@@ -29,7 +29,7 @@ still flip to the earlier cards.
 - Arrows ‹ ›, mouse wheel / trackpad swipe, ← → keys; Enter opens, Esc hides.
 - **Cmd+Shift+C** (Ctrl+Shift+C on Windows) or a click on the tray icon shows / hides it.
 - It also pops up by itself when a session starts waiting for you, and every 20 minutes while there are cards.
-- Tray menu: "Check now", "Mark all as done" (hides all current cards until something new happens in them), "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
+- Tray menu: "Check now", "Mark all as done" (Don't remind for all current cards), "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
 
 ## How the next step is made
 
@@ -42,8 +42,8 @@ claude -p --model haiku --output-format json --no-session-persistence --tools ""
 - Input is only the **end** of the conversation: the last ~12 messages, text only (no tool output), at most ~8000 characters.
 - The model gets no tools, so it only reads that text. `--no-session-persistence` means it leaves no new session on disk.
 - The text comes back in the language the session is in.
-- Results are cached in `summaries.json` and made again only when something new happens in the session.
-  Sessions where Claude is still working (active in the last 5 minutes) wait until it's done.
+- Results are cached in `summaries.json` and made again when something new happens in the session: within about a
+  minute after Claude finishes a reply. While Claude is still working, the card keeps the old step and says it will update.
 - This uses your Claude subscription (or API key), a little per session.
 - If it fails, the card says why and shows **Retry**. The most common reason: the terminal `claude` is signed out. Run
   `claude auth login` in the Terminal app, then press Retry. Failures are also written to `summaries.log`.
@@ -62,7 +62,7 @@ and `%APPDATA%\Claude` on Windows, except `~/.claude/projects`.
 A card is made for every session that is not archived and was active in the last 3 days (`recentDays`).
 "Waiting" also needs the last activity to be more than 5 minutes ago.
 
-Cowork and CLI have no "last opened" time, so they count as waiting until you open them (or use "Mark all as done").
+Cowork and CLI have no "last opened" time, so they count as waiting until you press "Don't remind".
 Chats on claude.ai are stored only in the cloud, so they aren't covered.
 
 ## Settings
@@ -90,8 +90,8 @@ The app's data folder: `~/Library/Application Support/dev.local.claude-carousel/
 - `claudePath` is the full path to `claude` if the app can't find it (empty = look in the usual places and your login shell).
 - `autoFlipSec: 0` turns auto-flip off.
 
-`state.json` also stores which cards you opened (`done`) or put off (`snoozed`), the earlier cards (`history`) and the
-sessions you asked not to be reminded about (`ignored`; remove an id from that list to see the session again).
+`state.json` also stores which cards you hid with Don't remind (`done`) or with Open / Later (`snoozed`),
+and the earlier cards (`history`).
 Restart the app after editing it. The same folder has `summaries.json` (next steps) and `summaries.log` (failures).
 
 ## Run and build

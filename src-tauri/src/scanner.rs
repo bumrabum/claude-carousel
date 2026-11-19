@@ -53,7 +53,7 @@ pub struct Card {
     /// Claude answered and you have not come back yet.
     #[serde(default)]
     pub waiting: bool,
-    /// Something happened in the last few minutes; Claude may still be working.
+    /// Claude may still be busy: something happened in the last few minutes and no finished reply yet.
     #[serde(default)]
     pub working: bool,
     /// The conversation file, used to make the "next step" summary. Not sent to the window.
@@ -95,6 +95,11 @@ impl Window {
     }
     fn is_quiet(&self, activity: i64) -> bool {
         self.age(activity) >= QUIET_MS
+    }
+    /// Claude may still be busy. A finished reply at the end of the transcript means it is not,
+    /// even right after the turn; without a transcript, any recent activity counts as busy.
+    fn is_working(&self, activity: i64, claude_finished: Option<bool>) -> bool {
+        claude_finished != Some(true) && !self.is_quiet(activity)
     }
 }
 
@@ -140,8 +145,9 @@ fn scan_code(
             .or(s["cliSessionId"].as_str())
             .and_then(|id| transcripts.get(id))
             .cloned();
+        let tail = transcript.as_deref().map(read_tail);
         let summary = code_summary(&s)
-            .or_else(|| read_tail(transcript.as_ref()?).last_text)
+            .or_else(|| tail.as_ref()?.last_text.clone())
             .unwrap_or_default();
         let session_id = str_of(&s, "sessionId");
         let cwd = str_of(&s, "cwd");
@@ -155,7 +161,7 @@ fn scan_code(
             cwd,
             activity_at: activity,
             waiting: activity > focused && w.is_quiet(activity),
-            working: !w.is_quiet(activity),
+            working: w.is_working(activity, tail.map(|t| t.claude_finished)),
             transcript,
         });
     }
@@ -210,7 +216,7 @@ fn scan_cowork(paths: &Paths, w: Window) -> Vec<Card> {
             cwd: String::new(),
             activity_at: activity,
             waiting: tail.claude_finished && w.is_quiet(activity),
-            working: !w.is_quiet(activity),
+            working: w.is_working(activity, Some(tail.claude_finished)),
             transcript: Some(transcript),
         });
     }
@@ -253,7 +259,7 @@ fn scan_cli(
             cwd,
             activity_at: activity,
             waiting: tail.claude_finished && w.is_quiet(activity),
-            working: !w.is_quiet(activity),
+            working: w.is_working(activity, Some(tail.claude_finished)),
             transcript: Some(path.clone()),
         });
     }
@@ -606,6 +612,10 @@ mod tests {
         fx.code_session("local_read", json!({"lastActivityAt": t, "lastFocusedAt": t + 1}));
         fx.code_session("local_archived", json!({"lastActivityAt": t, "isArchived": true}));
         fx.code_session("local_busy", json!({"lastActivityAt": NOW - 1000}));
+        // Active a second ago, but the transcript ends with a finished reply: not working.
+        fx.write("projects/p/answered.jsonl", &[user_prompt("hi"), assistant_text("Done.")].join("\n"));
+        fx.code_session("local_answered", json!({"lastActivityAt": NOW - 2000, "lastFocusedAt": NOW,
+            "cliSessionId": "answered"}));
         fx.code_session("local_old", json!({"lastActivityAt": NOW - 30 * 24 * HOUR}));
 
         let cards = scan(&fx.paths(), NOW, 7 * 24 * HOUR);
@@ -616,6 +626,7 @@ mod tests {
             vec![
                 ("code:local_unread", true, false),
                 ("code:local_busy", false, true),
+                ("code:local_answered", false, false),
                 ("code:local_read", false, false),
             ]
         );
