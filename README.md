@@ -42,6 +42,9 @@ claude -p --model haiku --output-format json --no-session-persistence --tools ""
 ```
 
 - Input is only the **end** of the conversation: the last ~12 messages, text only (no tool output), at most ~8000 characters.
+- It judges by the very end: a request to you that you already answered doesn't come back as the next step, and a
+  session where Claude only reported finished work gets "nothing left, can be archived".
+- Recent cards get their next step first, then the earlier cards.
 - The model gets no tools, so it only reads that text. `--no-session-persistence` means it leaves no new session on disk.
 - The text comes back in the language the session is in.
 - Results are cached in `summaries.json` and made again when something new happens in the session: within about a

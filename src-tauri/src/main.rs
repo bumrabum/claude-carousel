@@ -217,7 +217,7 @@ fn tick(app: &AppHandle) {
         g.state.prune(&all, now);
         g.state.backfill_history(&all);
         shared.summarizer.prune(&all);
-        let visible: Vec<Card> = all.into_iter().filter(|c| g.state.is_visible(c, now)).collect();
+        let visible: Vec<Card> = all.iter().filter(|c| g.state.is_visible(c, now)).cloned().collect();
         let waiting: HashSet<String> =
             visible.iter().filter(|c| c.waiting).map(|c| c.id.clone()).collect();
         // Pop up right away when a session starts waiting; otherwise every few minutes.
@@ -229,7 +229,12 @@ fn tick(app: &AppHandle) {
             g.last_popup = Some(Instant::now());
         }
         if g.state.settings.summaries {
-            shared.summarizer.enqueue(&visible, now);
+            // Recent cards first, then the earlier cards you can flip back to.
+            let earlier = all.iter().filter(|c| {
+                !visible.iter().any(|v| v.id == c.id) && g.state.history.iter().any(|h| h.id == c.id)
+            });
+            let jobs: Vec<Card> = visible.iter().chain(earlier).cloned().collect();
+            shared.summarizer.enqueue(&jobs, now);
         }
         g.known_waiting = waiting;
         g.cards = visible;

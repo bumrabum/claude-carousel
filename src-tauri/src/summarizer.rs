@@ -28,7 +28,10 @@ Reply with JSON only, no other text: {"stopped": "...", "next": "..."}
 - stopped: where the work stopped, at most 8 words.
 - next: the single most useful next action for the PERSON (not for Claude), starting with a verb, at most 8 words.
   If Claude asked a question or waits for a decision or approval, say what to answer or decide.
-  If the work is finished and nothing is left, say that the session can be archived."#;
+  If the work is finished and nothing is left, say that nothing is left and the session can be archived.
+- Judge by the very end of the conversation. A request to the PERSON (check, test, decide) that PERSON already
+  answered, or that more work followed, is done: don't repeat it.
+- If Claude's last message only reports finished work (done, committed, sent) and asks nothing, the work is finished."#;
 
 /// What a card shows.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
