@@ -1,6 +1,8 @@
-// The carousel window: shows one slide at a time, flip with arrows / wheel / swipe.
-// Slides: cards waiting for you, then "All caught up" (only when nothing waits),
+// The carousel window: one slide at a time, "→ next step" in big letters.
+// Slides: recent sessions (waiting for you first), "All caught up" when there are none,
 // then earlier cards you already opened or marked done.
+// While open it flips by itself every few seconds through the recent sessions;
+// arrows / wheel / swipe / ← → take over.
 // Data and actions come from the Rust side (src-tauri/src/main.rs).
 
 import { invoke } from "@tauri-apps/api/core";
@@ -17,19 +19,27 @@ interface Card {
   cwd: string;
   summary: string;
   activityAt: number;
+  waiting: boolean;
+  working: boolean;
+  nextStep: { stopped: string; next: string } | null;
+  summarizing: boolean;
 }
 
 interface View {
   cards: Card[];
   history: Card[];
   autoHideSec: number;
+  autoFlipSec: number;
+  summaryError: string | null;
 }
 
-type Slide = { kind: "waiting"; card: Card } | { kind: "earlier"; card: Card } | { kind: "empty" };
+type Slide = { kind: "recent"; card: Card } | { kind: "earlier"; card: Card } | { kind: "empty" };
 
 const SOURCE_LABEL: Record<Source, string> = { code: "Code", cowork: "Cowork", cli: "CLI" };
-/** With nothing waiting the window goes away sooner. */
+/** With no cards the window goes away sooner. */
 const EMPTY_HIDE_SEC = 6;
+/** Auto-flipping stops and the window hides after one round, but never later than this. */
+const MAX_ROUND_SEC = 60;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
@@ -37,17 +47,23 @@ const el = {
   source: $("source"),
   where: $("where"),
   counter: $("counter"),
+  step: $("step"),
+  stopped: $("stopped"),
   title: $("title"),
-  summary: $("summary"),
   body: $("body"),
 };
 
 let slides: Slide[] = [];
-let waitingCount = 0;
+let recentCount = 0;
 let index = 0;
 let autoHideSec = 15;
+let autoFlipSec = 4;
 let hideTimer: number | undefined;
+let flipTimer: number | undefined;
 let hovered = false;
+/** You flipped by hand since the window opened: no more auto-flipping. */
+let manual = false;
+let summaryError: string | null = null;
 
 // ---------- data ----------
 
@@ -55,9 +71,11 @@ async function refresh() {
   const currentKey = slideKey(slides[index]);
   const view = await invoke<View>("get_cards");
   autoHideSec = view.autoHideSec;
-  waitingCount = view.cards.length;
+  autoFlipSec = view.autoFlipSec;
+  summaryError = view.summaryError;
+  recentCount = view.cards.length;
   slides = [
-    ...view.cards.map((card): Slide => ({ kind: "waiting", card })),
+    ...view.cards.map((card): Slide => ({ kind: "recent", card })),
     ...(view.cards.length === 0 ? [{ kind: "empty" } as Slide] : []),
     ...view.history.map((card): Slide => ({ kind: "earlier", card })),
   ];
@@ -84,24 +102,48 @@ function render(direction = 0) {
 
   if (slide.kind === "empty") {
     el.card.dataset.source = "none";
+    el.card.classList.remove("is-waiting", "raw", "has-error");
     el.where.textContent = slides.length > 1 ? "← → earlier cards" : "";
-    el.title.textContent = "All caught up";
-    el.summary.textContent = "No sessions are waiting for your reply.";
+    el.step.textContent = "All caught up";
+    el.stopped.textContent = "No recent sessions to come back to.";
+    el.title.textContent = "";
     el.card.title = "";
   } else {
-    const card = slide.card;
-    el.card.dataset.source = card.source;
-    el.source.textContent = slide.kind === "earlier" ? "Earlier" : SOURCE_LABEL[card.source];
-    el.where.textContent = [card.project, timeAgo(card.activityAt)].filter(Boolean).join(" · ");
-    el.title.textContent = card.title;
-    el.summary.textContent = card.summary || "Claude is waiting for your reply.";
-    el.card.title = card.cwd;
+    drawCard(slide.card, slide.kind === "earlier");
   }
 
   if (direction !== 0) {
     el.body.classList.remove("slide-left", "slide-right");
     void el.body.offsetWidth; // restart the animation
     el.body.classList.add(direction > 0 ? "slide-left" : "slide-right");
+  }
+}
+
+function drawCard(card: Card, earlier: boolean) {
+  el.card.dataset.source = card.source;
+  el.card.classList.toggle("is-waiting", card.waiting && !earlier);
+  el.source.textContent = earlier ? "Earlier" : SOURCE_LABEL[card.source];
+  el.where.textContent = [card.project, timeAgo(card.activityAt)].filter(Boolean).join(" · ");
+  el.title.textContent = card.title;
+  el.card.title = card.cwd;
+
+  const step = card.nextStep;
+  el.card.classList.toggle("raw", !step);
+  el.card.classList.toggle("has-error", !step && !card.summarizing && !!summaryError);
+  if (step) {
+    el.step.textContent = `→ ${step.next}`;
+    el.stopped.textContent = `Stopped: ${step.stopped}`;
+  } else if (card.working) {
+    el.step.textContent = "Claude is working…";
+    el.stopped.textContent = card.summary;
+  } else {
+    el.step.textContent = card.summary || "Claude is waiting for your reply.";
+    el.stopped.textContent = card.summarizing
+      ? "Working out the next step…"
+      : summaryError
+        ? `No next step: ${summaryError}`
+        : "";
+    el.stopped.title = el.stopped.textContent;
   }
 }
 
@@ -113,11 +155,54 @@ function timeAgo(ms: number): string {
   return `${Math.round(h / 24)} d ago`;
 }
 
-function move(step: number) {
+function go(step: number) {
   if (slides.length < 2) return;
   index = (index + step + slides.length) % slides.length;
   render(step);
-  startHideTimer(); // flipping counts as "still looking"
+}
+
+/** Flipping by hand: stop auto-flipping, keep the window open while you look. */
+function move(step: number) {
+  manual = true;
+  stopAutoFlip();
+  go(step);
+  startHideTimer();
+}
+
+// ---------- auto-flip and auto-hide ----------
+
+function startAutoFlip() {
+  stopAutoFlip();
+  if (manual || autoFlipSec <= 0 || recentCount < 2) return;
+  flipTimer = window.setInterval(() => {
+    if (hovered) return;
+    // Go round the recent sessions only, not the earlier cards.
+    index = index + 1 < recentCount ? index + 1 : 0;
+    render(1);
+  }, autoFlipSec * 1000);
+}
+
+function stopAutoFlip() {
+  window.clearInterval(flipTimer);
+}
+
+/** Hide by itself unless the mouse is over the card. */
+function startHideTimer() {
+  clearTimeout(hideTimer);
+  if (hovered) return;
+  let seconds = autoHideSec;
+  if (recentCount === 0) seconds = EMPTY_HIDE_SEC;
+  else if (!manual && autoFlipSec > 0 && recentCount > 1) {
+    // Let it go round once.
+    seconds = Math.min(MAX_ROUND_SEC, Math.max(autoHideSec, recentCount * autoFlipSec + 1));
+  }
+  hideTimer = window.setTimeout(hide, seconds * 1000);
+}
+
+function hide() {
+  clearTimeout(hideTimer);
+  stopAutoFlip();
+  invoke("hide_window");
 }
 
 // ---------- actions ----------
@@ -126,21 +211,11 @@ async function act(command: "open_card" | "mark_done" | "snooze") {
   const slide = slides[index];
   if (!slide || slide.kind === "empty") return;
   if (slide.kind === "earlier" && command !== "open_card") return;
+  manual = true;
+  stopAutoFlip();
   await invoke(command, { id: slide.card.id });
   await refresh();
   startHideTimer();
-}
-
-function hide() {
-  clearTimeout(hideTimer);
-  invoke("hide_window");
-}
-
-/** Hide by itself unless the mouse is over the card. */
-function startHideTimer() {
-  clearTimeout(hideTimer);
-  const seconds = waitingCount === 0 ? EMPTY_HIDE_SEC : autoHideSec;
-  if (!hovered) hideTimer = window.setTimeout(hide, seconds * 1000);
 }
 
 // ---------- wiring ----------
@@ -151,6 +226,10 @@ $("close").onclick = hide;
 $("open").onclick = () => act("open_card");
 $("later").onclick = () => act("snooze");
 $("done").onclick = () => act("mark_done");
+$("retry").onclick = async () => {
+  await invoke("retry_summaries");
+  await refresh();
+};
 
 el.card.addEventListener("mouseenter", () => {
   hovered = true;
@@ -185,7 +264,9 @@ window.addEventListener("keydown", (e) => {
 listen("cards-changed", refresh);
 listen("shown", async () => {
   index = 0;
+  manual = false;
   await refresh();
+  startAutoFlip();
   startHideTimer();
 });
 

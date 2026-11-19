@@ -12,7 +12,7 @@ const HISTORY_MAX: usize = 20;
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// Show the carousel again every N minutes while something is waiting.
+    /// Show the carousel again every N minutes while it has cards.
     pub remind_every_min: u64,
     /// Hide the carousel after N seconds without the mouse over it.
     pub auto_hide_sec: u64,
@@ -20,6 +20,16 @@ pub struct Settings {
     pub snooze_min: i64,
     /// Global shortcut that shows / hides the carousel. "CommandOrControl" is Cmd on Mac, Ctrl on Windows.
     pub hotkey: String,
+    /// Cards for sessions active within this many days.
+    pub recent_days: i64,
+    /// Make "where we stopped → next step" lines with the `claude` command.
+    pub summaries: bool,
+    /// Model for those lines (a small, fast one is enough).
+    pub summary_model: String,
+    /// Full path to `claude`; empty = find it automatically.
+    pub claude_path: String,
+    /// The open carousel flips to the next card every N seconds; 0 = off.
+    pub auto_flip_sec: u64,
 }
 
 impl Default for Settings {
@@ -29,6 +39,11 @@ impl Default for Settings {
             auto_hide_sec: 15,
             snooze_min: 60,
             hotkey: "CommandOrControl+Shift+C".into(),
+            recent_days: 3,
+            summaries: true,
+            summary_model: "haiku".into(),
+            claude_path: String::new(),
+            auto_flip_sec: 4,
         }
     }
 }

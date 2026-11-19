@@ -16,7 +16,7 @@
         "label": "carousel",
         "title": "Claude Carousel",
         "width": 380,
-        "height": 190,
+        "height": 200,
         "decorations": false,
         "transparent": true,
         "shadow": false,

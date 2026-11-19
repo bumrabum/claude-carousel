@@ -11,6 +11,7 @@
     <main id="card" class="card" aria-live="polite">
       <header class="meta">
         <span id="source" class="badge"></span>
+        <span id="waiting" class="waiting" title="Claude answered and waits for you">● Waiting</span>
         <span id="where" class="where"></span>
         <span class="spacer"></span>
         <button id="prev" class="icon" title="Previous (←)" aria-label="Previous">‹</button>
@@ -19,13 +20,16 @@
         <button id="close" class="icon" title="Hide (Esc)" aria-label="Hide">×</button>
       </header>
       <div id="body" class="body">
-        <h1 id="title" class="title"></h1>
-        <p id="summary" class="summary"></p>
+        <h1 id="step" class="step"></h1>
+        <p id="stopped" class="stopped"></p>
+        <p id="title" class="title"></p>
       </div>
       <footer class="actions">
         <button id="open" class="primary">Open</button>
         <button id="later">Later</button>
         <button id="done">Done</button>
+        <span class="spacer"></span>
+        <button id="retry" title="Try making next steps again">Retry</button>
       </footer>
     </main>
   </body>

@@ -1,4 +1,4 @@
-//! Finds Claude sessions where Claude has answered and is waiting for you.
+//! Finds recent Claude sessions and marks the ones where Claude answered and waits for you.
 //!
 //! Three sources, all read straight from disk (read-only):
 //! - Code:   Claude desktop app, Code tab. One JSON file per session with
@@ -16,14 +16,16 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-/// Ignore sessions that changed less than this long ago (Claude may still be working).
+/// A session that changed less than this long ago may still be working, so it is not "waiting" yet.
 pub const QUIET_MS: i64 = 5 * 60 * 1000;
-/// Ignore sessions older than this.
-pub const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// How much of a transcript's end we read to find the last message.
 const TAIL_BYTES: u64 = 512 * 1024;
 const SUMMARY_CHARS: usize = 220;
 const TITLE_CHARS: usize = 70;
+/// What `excerpt` keeps for the summary prompt.
+const EXCERPT_MESSAGES: usize = 12;
+const EXCERPT_MESSAGE_CHARS: usize = 1500;
+const EXCERPT_TOTAL_CHARS: usize = 8000;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -33,7 +35,7 @@ pub enum Source {
     Cli,
 }
 
-/// One "come back here" card.
+/// One session card.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Card {
@@ -48,6 +50,15 @@ pub struct Card {
     pub summary: String,
     /// Unix ms of Claude's last activity.
     pub activity_at: i64,
+    /// Claude answered and you have not come back yet.
+    #[serde(default)]
+    pub waiting: bool,
+    /// Something happened in the last few minutes; Claude may still be working.
+    #[serde(default)]
+    pub working: bool,
+    /// The conversation file, used to make the "next step" summary. Not sent to the window.
+    #[serde(skip)]
+    pub transcript: Option<PathBuf>,
 }
 
 /// Where the data lives on this machine.
@@ -67,14 +78,36 @@ impl Paths {
     }
 }
 
-/// All waiting sessions, newest first. Does not apply "done"/"snoozed" — see `state.rs`.
-pub fn scan(paths: &Paths, now: i64) -> Vec<Card> {
+/// Which sessions to look at.
+#[derive(Clone, Copy)]
+struct Window {
+    now: i64,
+    /// Only sessions active within this many ms.
+    recent_ms: i64,
+}
+
+impl Window {
+    fn age(&self, activity: i64) -> i64 {
+        self.now - activity
+    }
+    fn is_recent(&self, activity: i64) -> bool {
+        activity > 0 && self.age(activity) <= self.recent_ms
+    }
+    fn is_quiet(&self, activity: i64) -> bool {
+        self.age(activity) >= QUIET_MS
+    }
+}
+
+/// All sessions active within `recent_ms`: waiting ones first, then newest first.
+/// Does not apply "done"/"snoozed" — see `state.rs`.
+pub fn scan(paths: &Paths, now: i64, recent_ms: i64) -> Vec<Card> {
+    let w = Window { now, recent_ms };
     let transcripts = index_transcripts(&paths.cli_projects);
     let mut claimed = HashSet::new(); // transcript ids owned by the desktop app
-    let mut cards = scan_code(paths, &transcripts, &mut claimed, now);
-    cards.extend(scan_cowork(paths, now));
-    cards.extend(scan_cli(&transcripts, &claimed, now));
-    cards.sort_by_key(|c| -c.activity_at);
+    let mut cards = scan_code(paths, &transcripts, &mut claimed, w);
+    cards.extend(scan_cowork(paths, w));
+    cards.extend(scan_cli(&transcripts, &claimed, w));
+    cards.sort_by_key(|c| (!c.waiting, -c.activity_at));
     cards
 }
 
@@ -84,7 +117,7 @@ fn scan_code(
     paths: &Paths,
     transcripts: &HashMap<String, PathBuf>,
     claimed: &mut HashSet<String>,
-    now: i64,
+    w: Window,
 ) -> Vec<Card> {
     let mut cards = Vec::new();
     for file in session_files(&paths.claude_app.join("claude-code-sessions")) {
@@ -99,17 +132,16 @@ fn scan_code(
         }
         let activity = s["lastActivityAt"].as_i64().unwrap_or(0);
         let focused = s["lastFocusedAt"].as_i64().unwrap_or(0);
-        if activity <= focused || !in_window(activity, now) {
+        if !w.is_recent(activity) {
             continue;
         }
-        let transcript_id = s["lastAssistantCliSessionId"]
+        let transcript = s["lastAssistantCliSessionId"]
             .as_str()
-            .or(s["cliSessionId"].as_str());
+            .or(s["cliSessionId"].as_str())
+            .and_then(|id| transcripts.get(id))
+            .cloned();
         let summary = code_summary(&s)
-            .or_else(|| {
-                let path = transcripts.get(transcript_id?)?;
-                read_tail(path).last_text
-            })
+            .or_else(|| read_tail(transcript.as_ref()?).last_text)
             .unwrap_or_default();
         let session_id = str_of(&s, "sessionId");
         let cwd = str_of(&s, "cwd");
@@ -122,6 +154,9 @@ fn scan_code(
             session_id,
             cwd,
             activity_at: activity,
+            waiting: activity > focused && w.is_quiet(activity),
+            working: !w.is_quiet(activity),
+            transcript,
         });
     }
     cards
@@ -147,7 +182,7 @@ fn code_summary(s: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn scan_cowork(paths: &Paths, now: i64) -> Vec<Card> {
+fn scan_cowork(paths: &Paths, w: Window) -> Vec<Card> {
     let mut cards = Vec::new();
     for file in session_files(&paths.claude_app.join("local-agent-mode-sessions")) {
         let Some(s) = read_json(&file) else { continue };
@@ -160,13 +195,10 @@ fn scan_cowork(paths: &Paths, now: i64) -> Vec<Card> {
             .as_i64()
             .unwrap_or(0)
             .max(mtime_ms(&transcript));
-        if !in_window(activity, now) {
+        if !w.is_recent(activity) {
             continue;
         }
         let tail = read_tail(&transcript);
-        if !tail.claude_finished {
-            continue;
-        }
         let session_id = str_of(&s, "sessionId");
         cards.push(Card {
             id: format!("cowork:{session_id}"),
@@ -177,6 +209,9 @@ fn scan_cowork(paths: &Paths, now: i64) -> Vec<Card> {
             session_id,
             cwd: String::new(),
             activity_at: activity,
+            waiting: tail.claude_finished && w.is_quiet(activity),
+            working: !w.is_quiet(activity),
+            transcript: Some(transcript),
         });
     }
     cards
@@ -185,7 +220,7 @@ fn scan_cowork(paths: &Paths, now: i64) -> Vec<Card> {
 fn scan_cli(
     transcripts: &HashMap<String, PathBuf>,
     claimed: &HashSet<String>,
-    now: i64,
+    w: Window,
 ) -> Vec<Card> {
     let mut cards = Vec::new();
     for (id, path) in transcripts {
@@ -193,13 +228,14 @@ fn scan_cli(
             continue;
         }
         let activity = mtime_ms(path);
-        if !in_window(activity, now) {
+        if !w.is_recent(activity) {
             continue;
         }
         let tail = read_tail(path);
         // Terminal and IDE sessions (cli, claude-vscode, ...); skip scripts and bots built on the Agent SDK.
         let by_person = tail.entrypoint.as_deref().map_or(true, |e| !e.starts_with("sdk"));
-        if !tail.claude_finished || !by_person {
+        // Nothing said yet (e.g. a session opened and closed) — nothing to come back to.
+        if !by_person || tail.last_text.is_none() {
             continue;
         }
         let cwd = tail.cwd.unwrap_or_default();
@@ -216,6 +252,9 @@ fn scan_cli(
             summary: clean(&tail.last_text.unwrap_or_default(), SUMMARY_CHARS),
             cwd,
             activity_at: activity,
+            waiting: tail.claude_finished && w.is_quiet(activity),
+            working: !w.is_quiet(activity),
+            transcript: Some(path.clone()),
         });
     }
     cards
@@ -304,6 +343,60 @@ fn message_parts(content: &Value) -> (Option<String>, bool) {
         }
     }
     ((!text.trim().is_empty()).then_some(text), has_tool)
+}
+
+/// The end of a conversation as plain text for the summary prompt:
+/// the last messages from the person and from Claude, text only (no tool calls), trimmed.
+pub fn excerpt(path: &Path) -> Option<String> {
+    let text = read_end(path, TAIL_BYTES).ok()?;
+    let mut messages: Vec<(&str, String)> = Vec::new();
+    for line in text.lines() {
+        let Ok(e) = serde_json::from_str::<Value>(line) else { continue };
+        let who = match e["type"].as_str() {
+            Some("user") => "PERSON",
+            Some("assistant") => "CLAUDE",
+            _ => continue,
+        };
+        if e["isSidechain"].as_bool() == Some(true) || e["isMeta"].as_bool() == Some(true) {
+            continue;
+        }
+        let Some(t) = message_parts(&e["message"]["content"]).0 else { continue };
+        let t = strip_tags(&t).trim().to_string();
+        if t.is_empty() {
+            continue;
+        }
+        // Claude often writes one reply in several pieces; glue them together.
+        match messages.last_mut() {
+            Some((last, body)) if *last == who => {
+                body.push('\n');
+                body.push_str(&t);
+            }
+            _ => messages.push((who, t)),
+        }
+    }
+    let start = messages.len().saturating_sub(EXCERPT_MESSAGES);
+    let mut parts: Vec<String> = messages[start..]
+        .iter()
+        .map(|(who, body)| format!("{who}: {}", shorten_middle(body, EXCERPT_MESSAGE_CHARS)))
+        .collect();
+    // Keep the newest messages when the whole thing is too long.
+    while parts.len() > 1 && parts.iter().map(|p| p.chars().count()).sum::<usize>() > EXCERPT_TOTAL_CHARS {
+        parts.remove(0);
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// Keep the start and (longer) end of a long text — the end of a reply usually has the conclusion.
+fn shorten_middle(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let head = max / 3;
+    let tail = max - head - 1;
+    let start: String = s.chars().take(head).collect();
+    let end: String = s.chars().skip(n - tail).collect();
+    format!("{start}…{end}")
 }
 
 /// First thing the user typed, used as a title when the session has none.
@@ -412,11 +505,6 @@ fn mtime_ms(path: &Path) -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-fn in_window(activity: i64, now: i64) -> bool {
-    let age = now - activity;
-    (QUIET_MS..=MAX_AGE_MS).contains(&age)
-}
-
 fn str_of(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").to_string()
 }
@@ -520,9 +608,17 @@ mod tests {
         fx.code_session("local_busy", json!({"lastActivityAt": NOW - 1000}));
         fx.code_session("local_old", json!({"lastActivityAt": NOW - 30 * 24 * HOUR}));
 
-        let cards = scan(&fx.paths(), NOW);
-        assert_eq!(cards.len(), 1, "{cards:?}");
-        assert_eq!(cards[0].id, "code:local_unread");
+        let cards = scan(&fx.paths(), NOW, 7 * 24 * HOUR);
+        let flags: Vec<_> = cards.iter().map(|c| (c.id.as_str(), c.waiting, c.working)).collect();
+        // Waiting first; archived and too old are left out.
+        assert_eq!(
+            flags,
+            vec![
+                ("code:local_unread", true, false),
+                ("code:local_busy", false, true),
+                ("code:local_read", false, false),
+            ]
+        );
         assert_eq!(cards[0].summary, "run wrangler login");
         assert_eq!(cards[0].project, "proj");
     }
@@ -531,7 +627,7 @@ mod tests {
     fn cli_sessions_need_a_finished_reply() {
         let fx = Fixture::new("cli");
         let done = [user_prompt("fix the bug"), assistant_tool(), assistant_text("Fixed it.")].join("\n");
-        let working = [user_prompt("go"), assistant_tool()].join("\n");
+        let working = [user_prompt("go"), assistant_text("On it."), assistant_tool()].join("\n");
         let titled = [
             json!({"type":"custom-title","customTitle":"My title"}).to_string(),
             user_prompt("hi"),
@@ -547,12 +643,38 @@ mod tests {
         // "owned" belongs to a desktop session, so the CLI scan must skip it.
         fx.code_session("local_x", json!({"cliSessionId": "owned", "lastActivityAt": 0}));
 
-        let mut ids: Vec<_> = scan(&fx.paths(), NOW).into_iter().map(|c| (c.id, c.title)).collect();
+        let mut ids: Vec<_> = scan(&fx.paths(), NOW, 7 * 24 * HOUR)
+            .into_iter()
+            .map(|c| (c.id, c.title, c.waiting))
+            .collect();
         ids.sort();
         assert_eq!(
             ids,
-            vec![("cli:done".into(), "fix the bug".into()), ("cli:titled".into(), "My title".into())]
+            vec![
+                ("cli:done".into(), "fix the bug".into(), true),
+                ("cli:titled".into(), "My title".into(), true),
+                ("cli:working".into(), "go".into(), false),
+            ]
         );
+    }
+
+    #[test]
+    fn excerpt_keeps_text_only_and_the_newest_end() {
+        let fx = Fixture::new("excerpt");
+        let long = "x".repeat(5000);
+        let body = [
+            user_prompt("<ide_opened_file>a.md</ide_opened_file> please fix"),
+            assistant_tool(),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","content":"secret tool output"}]}}).to_string(),
+            assistant_text("Part one."),
+            assistant_text(&long),
+        ]
+        .join("\n");
+        let p = fx.write("projects/p/e.jsonl", &body);
+        let ex = excerpt(&p).unwrap();
+        assert!(ex.starts_with("PERSON: please fix\n\nCLAUDE: Part one.\n"), "{ex}");
+        assert!(!ex.contains("secret tool output"));
+        assert!(ex.chars().count() < 1700, "long reply is shortened");
     }
 
     #[test]
@@ -568,8 +690,8 @@ mod tests {
     #[ignore]
     fn real_machine() {
         let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-        for c in scan(&Paths::detect().unwrap(), now) {
-            println!("{:?} | {} | {} | {}h ago\n    {}", c.source, c.project, c.title,
+        for c in scan(&Paths::detect().unwrap(), now, 3 * 24 * HOUR) {
+            println!("{:?} waiting={} | {} | {} | {}h ago\n    {}", c.source, c.waiting, c.project, c.title,
                 (now - c.activity_at) / HOUR, c.summary);
         }
     }

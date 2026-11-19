@@ -1,21 +1,24 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Claude Carousel: a tray app that reminds you about Claude sessions
-//! waiting for your reply, as a small carousel in the top-right corner.
+//! Claude Carousel: a tray app that reminds you where each recent Claude session
+//! stopped and what to do next, as a small carousel in the top-right corner.
 //!
 //! Flow: a background thread scans sessions every minute (`scanner`),
-//! filters out what you marked done / later (`state`), updates the tray
-//! count and pops the carousel window when something new appears or the
-//! reminder interval passes. The window (src/main.ts) asks for cards
-//! and calls the commands below.
+//! filters out what you marked done / later (`state`), queues sessions for a
+//! short "stopped → next step" line (`summarizer`, a second thread), updates the
+//! tray count (sessions waiting for you) and pops the carousel window when a new
+//! session starts waiting or the reminder interval passes. The window
+//! (src/main.ts) asks for cards and calls the commands below.
 
 mod actions;
 mod scanner;
 mod state;
+mod summarizer;
 
 use scanner::{Card, Paths};
 use state::State;
+use summarizer::{CallSettings, NextStep, Summarizer};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -26,22 +29,24 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SCAN_EVERY: Duration = Duration::from_secs(60);
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const WINDOW: &str = "carousel";
 const TRAY: &str = "main";
 
 struct Shared {
     paths: Paths,
     state_file: PathBuf,
+    summarizer: Summarizer,
     inner: Mutex<Inner>,
 }
 
 #[derive(Default)]
 struct Inner {
     state: State,
-    /// Cards currently shown (after done/later filtering), newest first.
+    /// Cards currently shown (after done/later filtering): waiting first, then newest.
     cards: Vec<Card>,
-    /// Card ids seen in the previous scan, to notice new ones.
-    known: HashSet<String>,
+    /// Ids of sessions that were waiting in the previous scan, to notice new ones.
+    known_waiting: HashSet<String>,
     last_popup: Option<Instant>,
 }
 
@@ -51,27 +56,51 @@ fn now_ms() -> i64 {
 
 // ---------- commands called from the window ----------
 
+/// A card plus its "stopped → next step" line, as the window gets it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CardView {
+    #[serde(flatten)]
+    card: Card,
+    next_step: Option<NextStep>,
+    /// A (newer) next-step line is being made right now or soon.
+    summarizing: bool,
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct View {
-    /// Waiting for you, newest first.
-    cards: Vec<Card>,
-    /// Earlier cards (opened / done), newest first, without the ones waiting again.
-    history: Vec<Card>,
+    /// Recent sessions: waiting for you first, then newest.
+    cards: Vec<CardView>,
+    /// Earlier cards (opened / done), newest first, without the ones shown above.
+    history: Vec<CardView>,
     auto_hide_sec: u64,
+    auto_flip_sec: u64,
+    /// Why next steps can't be made right now (e.g. `claude` is signed out).
+    summary_error: Option<String>,
 }
 
 #[tauri::command]
 fn get_cards(shared: tauri::State<'_, Shared>) -> View {
     let g = shared.inner.lock().unwrap();
+    let view = |card: &Card| {
+        let (next_step, summarizing) = shared.summarizer.get(card);
+        CardView { card: card.clone(), next_step, summarizing }
+    };
     let history = g
         .state
         .history
         .iter()
         .filter(|h| !g.cards.iter().any(|c| c.id == h.id))
-        .cloned()
+        .map(view)
         .collect();
-    View { cards: g.cards.clone(), history, auto_hide_sec: g.state.settings.auto_hide_sec }
+    View {
+        cards: g.cards.iter().map(view).collect(),
+        history,
+        auto_hide_sec: g.state.settings.auto_hide_sec,
+        auto_flip_sec: g.state.settings.auto_flip_sec,
+        summary_error: shared.summarizer.last_error(),
+    }
 }
 
 #[tauri::command]
@@ -91,6 +120,14 @@ fn mark_done(app: AppHandle, id: String) {
 #[tauri::command]
 fn snooze(app: AppHandle, id: String) {
     update_card(&app, &id, |state, card| state.snooze(card, now_ms()));
+}
+
+/// Try making next steps again after a failure (e.g. after signing in to `claude`).
+#[tauri::command]
+fn retry_summaries(app: AppHandle) {
+    app.state::<Shared>().summarizer.retry();
+    let _ = app.emit("cards-changed", ());
+    std::thread::spawn(move || tick(&app));
 }
 
 #[tauri::command]
@@ -116,7 +153,7 @@ fn update_card(app: &AppHandle, id: &str, change: impl Fn(&mut State, &Card)) {
             g.state.save(&shared.state_file);
         }
         g.cards.retain(|c| c.id != id);
-        g.cards.len()
+        waiting_count(&g.cards)
     };
     refresh_ui(app, count);
 }
@@ -134,6 +171,25 @@ fn mark_all_done(app: &AppHandle) {
 
 // ---------- scanning and showing ----------
 
+/// Second thread: makes "next step" lines one by one, refreshing the window after each.
+fn summary_loop(app: AppHandle) {
+    loop {
+        let shared = app.state::<Shared>();
+        let settings = {
+            let g = shared.inner.lock().unwrap();
+            CallSettings {
+                model: g.state.settings.summary_model.clone(),
+                claude_path: g.state.settings.claude_path.clone(),
+            }
+        };
+        if shared.summarizer.work_one(&settings, now_ms()) {
+            let _ = app.emit("cards-changed", ());
+        } else {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    }
+}
+
 fn scan_loop(app: AppHandle) {
     loop {
         tick(&app);
@@ -141,26 +197,41 @@ fn scan_loop(app: AppHandle) {
     }
 }
 
+fn waiting_count(cards: &[Card]) -> usize {
+    cards.iter().filter(|c| c.waiting).count()
+}
+
 fn tick(app: &AppHandle) {
     let shared = app.state::<Shared>();
     let now = now_ms();
-    let all = scanner::scan(&shared.paths, now);
+    let recent_ms = {
+        let g = shared.inner.lock().unwrap();
+        g.state.settings.recent_days.max(1) * DAY_MS
+    };
+    let all = scanner::scan(&shared.paths, now, recent_ms);
     let (count, popup) = {
         let mut g = shared.inner.lock().unwrap();
         g.state.prune(&all, now);
         g.state.backfill_history(&all);
+        shared.summarizer.prune(&all);
         let visible: Vec<Card> = all.into_iter().filter(|c| g.state.is_visible(c, now)).collect();
-        let has_new = visible.iter().any(|c| !g.known.contains(&c.id));
+        let waiting: HashSet<String> =
+            visible.iter().filter(|c| c.waiting).map(|c| c.id.clone()).collect();
+        // Pop up right away when a session starts waiting; otherwise every few minutes.
+        let new_waiting = waiting.iter().any(|id| !g.known_waiting.contains(id));
         let every = Duration::from_secs(g.state.settings.remind_every_min * 60);
         let due = g.last_popup.map_or(true, |t| t.elapsed() >= every);
-        let popup = !visible.is_empty() && (has_new || due);
+        let popup = !visible.is_empty() && (new_waiting || due);
         if popup {
             g.last_popup = Some(Instant::now());
         }
-        g.known = visible.iter().map(|c| c.id.clone()).collect();
+        if g.state.settings.summaries {
+            shared.summarizer.enqueue(&visible, now);
+        }
+        g.known_waiting = waiting;
         g.cards = visible;
         g.state.save(&shared.state_file);
-        (g.cards.len(), popup)
+        (waiting_count(&g.cards), popup)
     };
     refresh_ui(app, count);
     if popup {
@@ -267,12 +338,15 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let state_file = app.path().app_data_dir()?.join("state.json");
+            let data_dir = app.path().app_data_dir()?;
+            let _ = std::fs::create_dir_all(&data_dir);
+            let state_file = data_dir.join("state.json");
             let paths = Paths::detect().expect("home folder not found");
             let state = State::load(&state_file);
             register_hotkey(app, &state.settings.hotkey);
             app.manage(Shared {
                 inner: Mutex::new(Inner { state, ..Default::default() }),
+                summarizer: Summarizer::new(&data_dir),
                 paths,
                 state_file,
             });
@@ -280,9 +354,18 @@ fn main() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || scan_loop(handle));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || summary_loop(handle));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_cards, open_card, mark_done, snooze, hide_window])
+        .invoke_handler(tauri::generate_handler![
+            get_cards,
+            open_card,
+            mark_done,
+            snooze,
+            hide_window,
+            retry_summaries
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Claude Carousel");
 }

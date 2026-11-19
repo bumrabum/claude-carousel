@@ -58,11 +58,22 @@ body {
 .card[data-source="cli"] { --accent: var(--cli); }
 .card[data-source="none"] { --accent: var(--cli); }
 
-/* Nothing waiting: just the message, arrows to earlier cards and the close button. */
+/* No cards: just the message, arrows to earlier cards and the close button. */
 .card.empty .badge,
+.card.empty .waiting,
 .card.empty .actions,
 .card.single #prev,
 .card.single #next { display: none; }
+
+/* "Retry" only when next steps failed. */
+.card:not(.has-error) #retry { display: none; }
+
+/* No next step because of an error: let the message wrap so it can be read. */
+.card.has-error .stopped {
+  white-space: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+}
 
 /* Earlier cards: greyed out, only "Open". */
 .card.earlier { --accent: var(--muted); }
@@ -88,6 +99,14 @@ body {
   font-size: 10.5px;
 }
 
+.waiting {
+  flex: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.card:not(.is-waiting) .waiting { display: none; }
+
 .where {
   overflow: hidden;
   white-space: nowrap;
@@ -107,23 +126,38 @@ body {
   overflow: hidden;
 }
 
+/* Big: the next step. Small: where it stopped. Grey: the session's name. */
+.step {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.stopped,
 .title {
-  margin: 0 0 3px;
-  font-size: 14px;
-  font-weight: 600;
+  margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.4;
 }
 
-.summary {
-  margin: 0;
+.stopped { font-size: 12.5px; }
+
+.title {
+  font-size: 11.5px;
   color: var(--muted);
-  line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+}
+
+/* No next step yet: the raw reply excerpt, smaller and in two lines. */
+.card.raw .step {
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .actions {
