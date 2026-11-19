@@ -1,12 +1,15 @@
-/* The window itself is transparent; only the rounded card is drawn. */
+/* The window itself is transparent; only the rounded card is drawn.
+   Layout: [‹ rail] [content] [rail ›] on top, a full-width bar of big buttons below. */
 
 :root {
-  --bg: rgba(250, 249, 245, 0.96);
+  --bg: rgba(252, 251, 248, 0.97);
   --fg: #1f1e1d;
   --muted: #6b6a66;
-  --line: rgba(0, 0, 0, 0.08);
-  --button: rgba(0, 0, 0, 0.05);
-  --button-hover: rgba(0, 0, 0, 0.1);
+  --line: rgba(0, 0, 0, 0.09);
+  --rail: rgba(0, 0, 0, 0.035);
+  --rail-hover: rgba(0, 0, 0, 0.08);
+  --button-hover: rgba(0, 0, 0, 0.05);
+  --dot: rgba(0, 0, 0, 0.18);
   --accent: #c96442;
   --accent-fg: #fff;
   --code: #c96442;
@@ -18,12 +21,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: rgba(38, 38, 36, 0.96);
+    --bg: rgba(36, 36, 34, 0.97);
     --fg: #f0eee6;
     --muted: #a3a19a;
-    --line: rgba(255, 255, 255, 0.08);
-    --button: rgba(255, 255, 255, 0.07);
-    --button-hover: rgba(255, 255, 255, 0.14);
+    --line: rgba(255, 255, 255, 0.09);
+    --rail: rgba(255, 255, 255, 0.04);
+    --rail-hover: rgba(255, 255, 255, 0.1);
+    --button-hover: rgba(255, 255, 255, 0.06);
+    --dot: rgba(255, 255, 255, 0.22);
   }
 }
 
@@ -37,66 +42,105 @@ body {
   cursor: default;
 }
 
+svg {
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ---------- card ---------- */
+
 .card {
   box-sizing: border-box;
   margin: 10px;
   height: calc(100vh - 20px);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 10px;
-  border-radius: 14px;
+  overflow: hidden;
+  border-radius: 16px;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--line);
-  border-left: 4px solid var(--accent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 
 .card[data-source="code"] { --accent: var(--code); }
 .card[data-source="cowork"] { --accent: var(--cowork); }
 .card[data-source="cli"] { --accent: var(--cli); }
 .card[data-source="none"] { --accent: var(--cli); }
+.card.earlier { --accent: var(--muted); }
 
-/* No cards: just the message, arrows to earlier cards and the close button. */
-.card.empty .badge,
-.card.empty .waiting,
-.card.empty .actions,
-.card.single #prev,
-.card.single #next { display: none; }
-
-/* "Retry" only when next steps failed. */
-.card:not(.has-error) #retry { display: none; }
-
-/* No next step because of an error: let the message wrap so it can be read. */
-.card.has-error .stopped {
-  white-space: normal;
-  font-size: 11.5px;
-  color: var(--muted);
+.top {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
-/* Earlier cards: greyed out, only "Open". */
-.card.earlier { --accent: var(--muted); }
-.card.earlier #later,
-.card.earlier #dont-remind { display: none; }
+/* ---------- arrows: full-height rails with their own shade ---------- */
+
+.rail {
+  flex: none;
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  color: var(--muted);
+  background: var(--rail);
+  transition: background 120ms, color 120ms;
+}
+
+#prev { border-right: 1px solid var(--line); }
+#next { border-left: 1px solid var(--line); }
+
+.rail:hover {
+  background: var(--rail-hover);
+  color: var(--fg);
+}
+
+.rail svg { stroke-width: 2.4; }
+
+/* ---------- content ---------- */
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 9px 16px;
+}
 
 .meta {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
   min-width: 0;
 }
 
 .badge {
   flex: none;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 6px;
   background: var(--accent);
   color: var(--accent-fg);
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .waiting {
@@ -115,9 +159,23 @@ body {
 
 .spacer { flex: 1; }
 
-.counter {
+/* The close button: easy to hit, top right. */
+.close {
   flex: none;
-  font-variant-numeric: tabular-nums;
+  width: 26px;
+  height: 26px;
+  margin: -3px -4px -3px 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--muted);
+}
+
+.close:hover {
+  background: var(--rail-hover);
+  color: var(--fg);
 }
 
 .body {
@@ -128,10 +186,11 @@ body {
 
 /* Big: the next step. Small: where it stopped. Grey: the session's name. */
 .step {
-  margin: 0 0 4px;
-  font-size: 15px;
+  margin: 0 0 5px;
+  font-size: 19px;
   font-weight: 650;
-  line-height: 1.3;
+  line-height: 1.28;
+  letter-spacing: -0.01em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -147,62 +206,122 @@ body {
   line-height: 1.4;
 }
 
-.stopped { font-size: 12.5px; }
+.stopped {
+  font-size: 13px;
+  color: var(--muted);
+}
 
 .title {
   font-size: 11.5px;
   color: var(--muted);
+  opacity: 0.8;
 }
 
-/* No next step yet: the raw reply excerpt, smaller and in two lines. */
+/* No next step yet: the raw reply excerpt, smaller. */
 .card.raw .step {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
 }
 
-.actions {
+/* No next step because of an error: let the message wrap so it can be read. */
+.card.has-error .stopped {
+  white-space: normal;
+  font-size: 11.5px;
+}
+
+/* ---------- position dots (or "3 / 24" when there are too many) ---------- */
+
+.dots {
+  flex: none;
+  height: 8px;
   display: flex;
-  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
-button {
-  font: inherit;
-  color: inherit;
-  border: none;
-  border-radius: 7px;
-  background: var(--button);
-  padding: 4px 10px;
-  cursor: pointer;
+.dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--dot);
+  transition: width 180ms, background 180ms;
 }
 
-button:hover { background: var(--button-hover); }
+.dots i.on {
+  width: 18px;
+  background: var(--accent);
+}
 
-button.primary {
+/* Earlier cards after the recent ones: a little gap and paler dots. */
+.dots i.earlier { opacity: 0.5; }
+.dots i.gap { margin-left: 6px; }
+
+/* ---------- big buttons at the bottom ---------- */
+
+.actions {
+  flex: none;
+  display: flex;
+  height: 46px;
+  border-top: 1px solid var(--line);
+}
+
+.actions button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 120ms, filter 120ms;
+}
+
+.actions button svg { font-size: 16px; }
+.actions button + button { border-left: 1px solid var(--line); }
+.actions button:hover { background: var(--button-hover); }
+
+.actions .primary {
   background: var(--accent);
   color: var(--accent-fg);
 }
 
-button.primary:hover { filter: brightness(1.08); }
-
-button.icon {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 15px;
-  line-height: 22px;
-  background: transparent;
+.actions .primary:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
 }
 
-button.icon:hover { background: var(--button); }
+/* ---------- what shows when ---------- */
 
-.slide-left { animation: from-right 180ms ease-out; }
-.slide-right { animation: from-left 180ms ease-out; }
+/* No cards: just the message, arrows to earlier cards and the close button. */
+.card.empty .badge,
+.card.empty .waiting,
+.card.empty .actions { display: none; }
+
+/* Only one slide: no arrows, no dots. */
+.card.single .rail,
+.card.single .dots { display: none; }
+.card.single .content { padding-left: 16px; }
+
+/* "Retry" only when next steps failed. */
+.card:not(.has-error) #retry { display: none; }
+
+/* Earlier cards: only "Open". */
+.card.earlier #later,
+.card.earlier #dont-remind { display: none; }
+
+/* ---------- slide animation ---------- */
+
+.slide-left { animation: from-right 200ms ease-out; }
+.slide-right { animation: from-left 200ms ease-out; }
 
 @keyframes from-right {
-  from { opacity: 0; transform: translateX(14px); }
+  from { opacity: 0; transform: translateX(18px); }
 }
 
 @keyframes from-left {
-  from { opacity: 0; transform: translateX(-14px); }
+  from { opacity: 0; transform: translateX(-18px); }
 }

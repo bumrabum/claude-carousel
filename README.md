@@ -11,7 +11,7 @@ small carousel of cards in the top-right corner that flips by itself, so you can
 - Grey: the session's title.
 - On top: where it's from (**Code** = Code tab in the Claude app, **Cowork**, **CLI** = `claude` in a terminal or an IDE),
   **● Waiting** if Claude answered and you haven't come back, the project folder and how long ago.
-- Buttons:
+- Big buttons at the bottom:
   - **Open** jumps into the session and hides the card for 1 hour, like Later. Code goes to the session in the Claude app;
     CLI opens a new terminal with `claude --resume <id>`.
   - **Later** hides the card for 1 hour.
@@ -26,7 +26,9 @@ still flip to the earlier cards.
 
 - The open carousel flips to the next card every 10 seconds and hides after one round (at most 2 minutes).
   Hovering the mouse pauses it; flipping by hand stops auto-flip.
-- Arrows ‹ ›, mouse wheel / trackpad swipe, ← → keys; Enter opens, Esc hides.
+- The shaded strips with ‹ › on the left and right flip cards (click anywhere on the strip); so do the mouse wheel /
+  trackpad swipe and the ← → keys. Dots at the bottom show where you are. Enter opens.
+- **×** in the top-right corner (or Esc) hides the carousel.
 - **Cmd+Shift+C** (Ctrl+Shift+C on Windows) or a click on the tray icon shows / hides it.
 - It also pops up by itself when a session starts waiting for you, and every 20 minutes while there are cards.
 - Tray menu: "Check now", "Mark all as done" (Don't remind for all current cards), "Quit". On a Mac, the number next to the icon is how many sessions are waiting.

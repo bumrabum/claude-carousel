@@ -42,13 +42,15 @@ const SOURCE_LABEL: Record<Source, string> = { code: "Code", cowork: "Cowork", c
 const EMPTY_HIDE_SEC = 6;
 /** Auto-flipping stops and the window hides after one round, but never later than this. */
 const MAX_ROUND_SEC = 120;
+/** More slides than this: "3 / 24" instead of dots. */
+const MAX_DOTS = 12;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const el = {
   card: $("card"),
   source: $("source"),
   where: $("where"),
-  counter: $("counter"),
+  dots: $("dots"),
   step: $("step"),
   stopped: $("stopped"),
   title: $("title"),
@@ -100,7 +102,7 @@ function render(direction = 0) {
   el.card.classList.toggle("empty", slide.kind === "empty");
   el.card.classList.toggle("earlier", slide.kind === "earlier");
   el.card.classList.toggle("single", slides.length < 2);
-  el.counter.textContent = slides.length > 1 ? `${index + 1} / ${slides.length}` : "";
+  drawDots();
 
   if (slide.kind === "empty") {
     el.card.dataset.source = "none";
@@ -151,6 +153,23 @@ function drawCard(card: Card, earlier: boolean) {
         : "";
     el.stopped.title = el.stopped.textContent;
   }
+}
+
+/** One dot per slide, the current one long; earlier cards paler, after a small gap. */
+function drawDots() {
+  if (slides.length > MAX_DOTS) {
+    el.dots.textContent = `${index + 1} / ${slides.length}`;
+    return;
+  }
+  el.dots.replaceChildren(
+    ...slides.map((s, i) => {
+      const dot = document.createElement("i");
+      dot.classList.toggle("on", i === index);
+      dot.classList.toggle("earlier", s.kind === "earlier");
+      dot.classList.toggle("gap", s.kind === "earlier" && slides[i - 1]?.kind !== "earlier");
+      return dot;
+    }),
+  );
 }
 
 function timeAgo(ms: number): string {
