@@ -13,12 +13,13 @@ small carousel of cards in the top-right corner that flips by itself, so you can
   **● Waiting** if Claude answered and you haven't come back, the project folder and how long ago.
 - Buttons:
   - **Open** jumps into the session. Code goes to the session in the Claude app; CLI opens a new terminal with `claude --resume <id>`.
+    The card then hides until something new happens in that session.
   - **Later** hides the card for 1 hour.
-  - **Done** hides it until something new happens in that session.
+  - **Don't remind** hides the session for good, even if something new happens in it. Use it for junk or finished sessions.
   - **Retry** appears only when next steps could not be made (see below).
 
-Sessions waiting for you come first. After the recent sessions come **earlier** cards: the last 20 you opened or
-marked Done (grey, only **Open**). With no recent sessions the carousel shows "All caught up", and the arrows
+Sessions waiting for you come first. After the recent sessions come **earlier** cards: the last 20 you opened
+(grey, no **Later**). With no recent sessions the carousel shows "All caught up", and the arrows
 still flip to the earlier cards.
 
 ## Controls
@@ -28,7 +29,7 @@ still flip to the earlier cards.
 - Arrows ‹ ›, mouse wheel / trackpad swipe, ← → keys; Enter opens, Esc hides.
 - **Cmd+Shift+C** (Ctrl+Shift+C on Windows) or a click on the tray icon shows / hides it.
 - It also pops up by itself when a session starts waiting for you, and every 20 minutes while there are cards.
-- Tray menu: "Check now", "Mark all as done", "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
+- Tray menu: "Check now", "Mark all as done" (hides all current cards until something new happens in them), "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
 
 ## How the next step is made
 
@@ -61,7 +62,7 @@ and `%APPDATA%\Claude` on Windows, except `~/.claude/projects`.
 A card is made for every session that is not archived and was active in the last 3 days (`recentDays`).
 "Waiting" also needs the last activity to be more than 5 minutes ago.
 
-Cowork and CLI have no "last opened" time, so they count as waiting until you press "Done" (or "Mark all as done").
+Cowork and CLI have no "last opened" time, so they count as waiting until you open them (or use "Mark all as done").
 Chats on claude.ai are stored only in the cloud, so they aren't covered.
 
 ## Settings
@@ -89,7 +90,8 @@ The app's data folder: `~/Library/Application Support/dev.local.claude-carousel/
 - `claudePath` is the full path to `claude` if the app can't find it (empty = look in the usual places and your login shell).
 - `autoFlipSec: 0` turns auto-flip off.
 
-`state.json` also stores which cards you marked "Done" or "Later" and the earlier cards (`history`).
+`state.json` also stores which cards you opened (`done`) or put off (`snoozed`), the earlier cards (`history`) and the
+sessions you asked not to be reminded about (`ignored`; remove an id from that list to see the session again).
 Restart the app after editing it. The same folder has `summaries.json` (next steps) and `summaries.log` (failures).
 
 ## Run and build
@@ -117,7 +119,7 @@ src-tauri/src/
   main.rs            tray, timers, window, hotkey, commands for the UI
   scanner.rs         finds recent sessions (Code, Cowork, CLI), "waiting" flag, conversation excerpt + tests
   summarizer.rs      "stopped → next step" via `claude -p`, cache, background queue + tests
-  state.rs           "Done" / "Later", earlier cards, settings (state.json)
+  state.rs           "Open" / "Later" / "Don't remind" decisions, earlier cards, settings (state.json) + tests
   actions.rs         "Open" a session (claude:// link or terminal)
 src-tauri/icons/     icons; source.svg is the original, the rest are generated with `npx tauri icon`
 ```

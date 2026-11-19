@@ -1,4 +1,4 @@
-//! What the user decided about cards ("done", "later") plus settings.
+//! What the user decided about cards ("done", "later", "ignore") plus settings.
 //! Saved as `state.json` in the app's data folder; safe to edit by hand.
 
 use crate::scanner::Card;
@@ -52,13 +52,15 @@ impl Default for Settings {
 #[serde(rename_all = "camelCase", default)]
 pub struct State {
     pub settings: Settings,
-    /// Card id -> Claude's activity time when you pressed "Done".
+    /// Card id -> Claude's activity time when you opened the card (or used "Mark all as done").
     /// The card comes back only if Claude does something after that.
     pub done: HashMap<String, i64>,
     /// Card id -> hidden until this time (unix ms).
     pub snoozed: HashMap<String, i64>,
     /// Cards you opened or marked done, newest first, to flip back through.
     pub history: Vec<Card>,
+    /// Card ids you never want to see again, whatever happens in the session.
+    pub ignored: HashSet<String>,
 }
 
 impl State {
@@ -79,6 +81,9 @@ impl State {
     }
 
     pub fn is_visible(&self, card: &Card, now: i64) -> bool {
+        if self.ignored.contains(&card.id) {
+            return false;
+        }
         let done = self.done.get(&card.id).is_some_and(|&at| at >= card.activity_at);
         let snoozed = self.snoozed.get(&card.id).is_some_and(|&until| until > now);
         !done && !snoozed
@@ -90,6 +95,14 @@ impl State {
         self.history.retain(|c| c.id != card.id);
         self.history.insert(0, card.clone());
         self.history.truncate(HISTORY_MAX);
+    }
+
+    /// Hide the session for good: not even new activity brings it back, and it leaves the earlier cards.
+    pub fn ignore(&mut self, id: &str) {
+        self.ignored.insert(id.to_string());
+        self.done.remove(id);
+        self.snoozed.remove(id);
+        self.history.retain(|c| c.id != id);
     }
 
     pub fn snooze(&mut self, card: &Card, now: i64) {
@@ -107,9 +120,37 @@ impl State {
     }
 
     /// Forget sessions that are gone and snoozes that ran out, so the file stays small.
+    /// Ignored ids are kept: an old session can come back to life.
     pub fn prune(&mut self, all_cards: &[Card], now: i64) {
         let alive: HashSet<&str> = all_cards.iter().map(|c| c.id.as_str()).collect();
         self.done.retain(|id, _| alive.contains(id.as_str()));
         self.snoozed.retain(|id, &mut until| until > now && alive.contains(id.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: &str, activity_at: i64) -> Card {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "source": "code", "sessionId": id, "title": "", "project": "",
+            "cwd": "", "summary": "", "activityAt": activity_at
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn ignored_sessions_stay_hidden_after_new_activity() {
+        let mut state = State::default();
+        state.mark_done(&card("code:a", 100));
+        state.ignore("code:a");
+        assert!(state.history.is_empty());
+        assert!(!state.is_visible(&card("code:a", 200), 0));
+        state.prune(&[], 0);
+        state.backfill_history(&[card("code:a", 200)]);
+        assert!(state.history.is_empty());
+        assert!(!state.is_visible(&card("code:a", 300), 0));
+        assert!(state.is_visible(&card("code:b", 300), 0));
     }
 }

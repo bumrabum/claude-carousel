@@ -75,10 +75,9 @@ body {
   color: var(--muted);
 }
 
-/* Earlier cards: greyed out, only "Open". */
+/* Earlier cards: greyed out, no "Later". */
 .card.earlier { --accent: var(--muted); }
-.card.earlier #later,
-.card.earlier #done { display: none; }
+.card.earlier #later { display: none; }
 
 .meta {
   display: flex;

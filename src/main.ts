@@ -207,10 +207,10 @@ function hide() {
 
 // ---------- actions ----------
 
-async function act(command: "open_card" | "mark_done" | "snooze") {
+async function act(command: "open_card" | "snooze" | "ignore") {
   const slide = slides[index];
   if (!slide || slide.kind === "empty") return;
-  if (slide.kind === "earlier" && command !== "open_card") return;
+  if (slide.kind === "earlier" && command === "snooze") return;
   manual = true;
   stopAutoFlip();
   await invoke(command, { id: slide.card.id });
@@ -225,7 +225,7 @@ $("next").onclick = () => move(1);
 $("close").onclick = hide;
 $("open").onclick = () => act("open_card");
 $("later").onclick = () => act("snooze");
-$("done").onclick = () => act("mark_done");
+$("ignore").onclick = () => act("ignore");
 $("retry").onclick = async () => {
   await invoke("retry_summaries");
   await refresh();

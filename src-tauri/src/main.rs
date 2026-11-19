@@ -113,13 +113,22 @@ fn open_card(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn mark_done(app: AppHandle, id: String) {
-    update_card(&app, &id, |state, card| state.mark_done(card));
-}
-
-#[tauri::command]
 fn snooze(app: AppHandle, id: String) {
     update_card(&app, &id, |state, card| state.snooze(card, now_ms()));
+}
+
+/// Hide a session for good (works for recent and earlier cards).
+#[tauri::command]
+fn ignore(app: AppHandle, id: String) {
+    let shared = app.state::<Shared>();
+    let count = {
+        let mut g = shared.inner.lock().unwrap();
+        g.state.ignore(&id);
+        g.state.save(&shared.state_file);
+        g.cards.retain(|c| c.id != id);
+        waiting_count(&g.cards)
+    };
+    refresh_ui(&app, count);
 }
 
 /// Try making next steps again after a failure (e.g. after signing in to `claude`).
@@ -361,8 +370,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_cards,
             open_card,
-            mark_done,
             snooze,
+            ignore,
             hide_window,
             retry_summaries
         ])
