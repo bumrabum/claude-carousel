@@ -59,6 +59,8 @@ pub struct State {
     pub snoozed: HashMap<String, i64>,
     /// Cards you opened or hid with "Don't remind", newest first, to flip back through.
     pub history: Vec<Card>,
+    /// "Start at login" was turned on once on the first run; after that only the tray switch changes it.
+    pub autostart_set: bool,
 }
 
 impl State {

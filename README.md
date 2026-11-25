@@ -31,7 +31,7 @@ still flip to the earlier cards.
 - **×** in the top-right corner (or Esc) hides the carousel.
 - **Cmd+Shift+C** (Ctrl+Shift+C on Windows) or a click on the tray icon shows / hides it.
 - It also pops up by itself when a session starts waiting for you, and every 20 minutes while there are cards.
-- Tray menu: "Check now", "Mark all as done" (Don't remind for all current cards), "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
+- Tray menu: "Check now", "Mark all as done" (Don't remind for all current cards), "Start at login", "Quit". On a Mac, the number next to the icon is how many sessions are waiting.
 
 ## How the next step is made
 
@@ -112,7 +112,8 @@ cd src-tauri && cargo test real_machine -- --ignored --nocapture     # what the 
 cd src-tauri && cargo test real_summaries -- --ignored --nocapture   # next steps for 5 recent sessions (calls claude)
 ```
 
-To install it, drag `Claude Carousel.app` into `/Applications`. To start it at login, add it in System Settings → General → Login Items.
+To install it, drag `Claude Carousel.app` into `/Applications` and open it. On the first run it turns on "Start at login"
+(a LaunchAgent on Mac, the `Run` registry key on Windows); switch it off in the tray menu.
 On Windows, `npm run tauri build` creates an installer in `bundle/nsis/`. The Windows version has to be built on Windows (or in CI).
 A `.dmg` (without `--bundles app`) needs permission to control Finder.
 

@@ -23,9 +23,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SCAN_EVERY: Duration = Duration::from_secs(60);
@@ -291,6 +292,8 @@ fn register_hotkey(app: &tauri::App, hotkey: &str) {
 // ---------- app setup ----------
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let at_login = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart = CheckMenuItem::with_id(app, "autostart", "Start at login", true, at_login, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -298,6 +301,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             &MenuItem::with_id(app, "rescan", "Check now", true, None::<&str>)?,
             &MenuItem::with_id(app, "all_done", "Mark all as done", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
+            &autostart,
             &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
         ],
     )?;
@@ -306,13 +310,14 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .tooltip("Claude Carousel")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => show_window(app),
             "rescan" => {
                 let app = app.clone();
                 std::thread::spawn(move || tick(&app));
             }
             "all_done" => mark_all_done(app),
+            "autostart" => toggle_autostart(app, &autostart),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -330,8 +335,18 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Turn "start at login" on or off; the check mark always shows the real state.
+fn toggle_autostart(app: &AppHandle, item: &CheckMenuItem<tauri::Wry>) {
+    let launcher = app.autolaunch();
+    let on = launcher.is_enabled().unwrap_or(false);
+    let _ = if on { launcher.disable() } else { launcher.enable() };
+    let _ = item.set_checked(launcher.is_enabled().unwrap_or(false));
+}
+
 fn main() {
     tauri::Builder::default()
+        // Mac: a LaunchAgent in ~/Library/LaunchAgents; Windows: the "Run" registry key.
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -350,7 +365,13 @@ fn main() {
             let _ = std::fs::create_dir_all(&data_dir);
             let state_file = data_dir.join("state.json");
             let paths = Paths::detect().expect("home folder not found");
-            let state = State::load(&state_file);
+            let mut state = State::load(&state_file);
+            if !state.autostart_set {
+                // First run: start at login by default (the tray menu turns it off).
+                let _ = app.autolaunch().enable();
+                state.autostart_set = true;
+                state.save(&state_file);
+            }
             register_hotkey(app, &state.settings.hotkey);
             app.manage(Shared {
                 inner: Mutex::new(Inner { state, ..Default::default() }),
